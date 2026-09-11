@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Detected test commands behind a leading `cd` or `set -e` segment. Detection previously inspected only the first `&&`/`||`/`;`/`|` segment, so `cd repo && npm test` never matched.
+- Parsed `node --test` output from its own summary block. `node --test` is now a recognized test command, and the `ℹ fail 0` summary row no longer counts as a failure via the generic fallback.
+
 ## [0.9.0] - 2026-07-03
 
 ### Changed

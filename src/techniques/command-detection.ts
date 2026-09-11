@@ -41,13 +41,46 @@ export function normalizeCommandForDetection(command: string | undefined | null)
 	return firstSegment || null;
 }
 
+/**
+ * Every segment a shell string can execute: each non-empty line, split on
+ * `&&` / `||` / `;` / `|`, with env prefixes stripped.
+ *
+ * Detection needs all of them rather than just the first. `cd repo && npm test`
+ * and scripts opening with `set -e` both start with a segment no command
+ * pattern matches, so first-segment-only detection skipped them entirely.
+ */
+export function commandSegmentsForDetection(command: string | undefined | null): string[] {
+	if (typeof command !== "string") {
+		return [];
+	}
+
+	const segments: string[] = [];
+	for (const rawLine of command.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line) {
+			continue;
+		}
+		const withoutEnvPrefix = line.replace(ENV_PREFIX_PATTERN, "").trim();
+		if (!withoutEnvPrefix) {
+			continue;
+		}
+		for (const part of withoutEnvPrefix.split(/&&|\|\||;|\|/)) {
+			const segment = part.trim().toLowerCase();
+			if (segment) {
+				segments.push(segment);
+			}
+		}
+	}
+	return segments;
+}
+
 export function matchesCommandPatterns(
 	command: string | undefined | null,
 	patterns: readonly RegExp[],
 ): boolean {
-	const normalized = normalizeCommandForDetection(command);
-	if (!normalized) {
+	const segments = commandSegmentsForDetection(command);
+	if (segments.length === 0) {
 		return false;
 	}
-	return patterns.some((pattern) => pattern.test(normalized));
+	return segments.some((segment) => patterns.some((pattern) => pattern.test(segment)));
 }

@@ -6,7 +6,7 @@ import { mock, runTest } from "./test-helpers.test.ts";
 import { matchesCommandPatterns, normalizeCommandForDetection } from "./techniques/command-detection.ts";
 import { compactPath } from "./techniques/path-utils.ts";
 import { filterAggressive } from "./techniques/source.ts";
-import { aggregateTestOutput } from "./techniques/test-output.ts";
+import { aggregateTestOutput, isTestCommand } from "./techniques/test-output.ts";
 import { applyWindowsBashCompatibilityFixes } from "./windows-command-helpers.ts";
 import { applyRewrittenCommandShellSafetyFixups } from "./rewrite-pipeline-safety.ts";
 import { applyRtkCommandEnvironment } from "./rtk-command-environment.ts";
@@ -235,6 +235,68 @@ runTest("command detection ignores env prefixes, blank lines, and chained suffix
 	assert.equal(normalizeCommandForDetection("   "), null);
 	assert.equal(matchesCommandPatterns("CI=1 bun test | head -5", [/^bun test/]), true);
 	assert.equal(matchesCommandPatterns("echo hello", [/^bun test/]), false);
+});
+
+runTest("command detection looks past a leading cd or set -e segment", () => {
+	// The first segment of these is `cd`/`set`, so matching only segment one
+	// silently skipped compaction for the real command further along.
+	assert.equal(matchesCommandPatterns("cd /repo && npm test", [/^npm\s+test\b/]), true);
+	assert.equal(matchesCommandPatterns("cd /repo && npm test | tail -20", [/^npm\s+test\b/]), true);
+	assert.equal(matchesCommandPatterns("set -e\ncd /repo\nnpm test", [/^npm\s+test\b/]), true);
+	assert.equal(matchesCommandPatterns("cd /tmp && printf 'x' && cargo test", [/^cargo\s+test\b/]), true);
+
+	// Broadening the scan must not start matching unrelated commands.
+	assert.equal(matchesCommandPatterns("cd /repo && git status", [/^npm\s+test\b/]), false);
+	assert.equal(matchesCommandPatterns("echo npm test", [/^npm\s+test\b/]), false);
+	assert.equal(matchesCommandPatterns("cd /repo", [/^npm\s+test\b/]), false);
+	assert.equal(matchesCommandPatterns(undefined, [/^npm\s+test\b/]), false);
+});
+
+runTest("node --test is recognized as a test command", () => {
+	assert.equal(isTestCommand("node --test"), true);
+	assert.equal(isTestCommand("node --test dcli/tests/*.mjs"), true);
+	assert.equal(isTestCommand("cd /repo && node --test"), true);
+	assert.equal(isTestCommand("node --test-only foo.mjs"), true);
+	assert.equal(isTestCommand("node ./script.js"), false);
+});
+
+runTest("node --test output parses its own summary, not the fail word", () => {
+	// Node prints `\u2139 fail 0` on a fully green run. Counting the bare word
+	// `fail` reported a passing run as a failure.
+	const passing = [
+		"\u2714 alpha (0.8ms)",
+		"\u2714 beta (0.1ms)",
+		"\u2139 tests 2",
+		"\u2139 suites 0",
+		"\u2139 pass 2",
+		"\u2139 fail 0",
+		"\u2139 skipped 0",
+	].join("\n");
+
+	const passingResult = aggregateTestOutput(passing, "node --test");
+	assert.ok(passingResult?.includes("PASS: 2 passed"), passingResult ?? "null");
+	assert.ok(!passingResult?.includes("FAIL:"), passingResult ?? "null");
+
+	const failing = [
+		"\u2714 passes one (1.0ms)",
+		"\u2716 fails one (1.0ms)",
+		"\u2139 tests 2",
+		"\u2139 pass 1",
+		"\u2139 fail 1",
+		"\u2139 skipped 0",
+		"",
+		"\u2716 failing tests:",
+		"",
+		"test at a.test.mjs:5:1",
+		"\u2716 fails one (1.0ms)",
+		"  AssertionError [ERR_ASSERTION]: 1 !== 2",
+	].join("\n");
+
+	const failingResult = aggregateTestOutput(failing, "node --test");
+	assert.ok(failingResult?.includes("PASS: 1 passed"), failingResult ?? "null");
+	assert.ok(failingResult?.includes("FAIL: 1 failed"), failingResult ?? "null");
+	// The failing test name must survive, otherwise the agent cannot act on it.
+	assert.ok(failingResult?.includes("fails one"), failingResult ?? "null");
 });
 
 runTest("RTK command environment preserves explicit leading RTK_DB_PATH overrides", () => {

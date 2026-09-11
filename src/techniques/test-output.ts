@@ -21,6 +21,7 @@ const TEST_COMMAND_PATTERNS = [
 	/^mocha\b/,
 	/^ava\b/,
 	/^tap\b/,
+	/^node\s+--test\b/,
 ] as const;
 
 const TEST_RESULT_PATTERNS = [
@@ -35,11 +36,25 @@ const FAILURE_START_PATTERNS = [
 	/^FAILED\s+/,
 	/^\s*●\s+/,
 	/^\s*✕\s+/,
+	/^\s*✖\s+/,
 	/test\s+\w+\s+\.\.\.\s*FAILED/,
 	/thread\s+'\w+'\s+panicked/,
 ];
 const FALLBACK_PASS_PATTERN = /(?:\b(?:ok|PASS)\b|[✓✔])/;
 const FALLBACK_FAIL_PATTERN = /(?:\b(?:FAIL|fail)\b|[✗✕])/;
+
+/**
+ * Node's test runner prints its own summary block (`ℹ tests 3`, `# pass 2`).
+ * Those rows are counts, not results: the bare word in `ℹ fail 0` otherwise
+ * matches the generic fallback and reports a fully green run as a failure.
+ */
+const SUMMARY_LINE_PATTERN = /^[ℹ#]\s/;
+const NODE_TEST_SUMMARY_PATTERNS = {
+	tests: /^[ℹ#]\s*tests?\s+(\d+)/m,
+	passed: /^[ℹ#]\s*pass\s+(\d+)/m,
+	failed: /^[ℹ#]\s*fail\s+(\d+)/m,
+	skipped: /^[ℹ#]\s*skipped\s+(\d+)/m,
+} as const;
 
 function isFailureStart(line: string): boolean {
 	return FAILURE_START_PATTERNS.some((pattern) => pattern.test(line));
@@ -60,6 +75,19 @@ function extractTestStats(output: string): Partial<TestSummary> {
 	return {};
 }
 
+function extractNodeTestStats(output: string): Partial<TestSummary> | null {
+	if (!NODE_TEST_SUMMARY_PATTERNS.tests.test(output)) {
+		return null;
+	}
+	const count = (pattern: RegExp): number =>
+		Number.parseInt(output.match(pattern)?.[1] ?? "0", 10) || 0;
+	return {
+		passed: count(NODE_TEST_SUMMARY_PATTERNS.passed),
+		failed: count(NODE_TEST_SUMMARY_PATTERNS.failed),
+		skipped: count(NODE_TEST_SUMMARY_PATTERNS.skipped),
+	};
+}
+
 export function isTestCommand(command: string | undefined | null): boolean {
 	return matchesCommandPatterns(command, TEST_COMMAND_PATTERNS);
 }
@@ -77,13 +105,17 @@ export function aggregateTestOutput(output: string, command: string | undefined 
 		failures: [],
 	};
 
-	const stats = extractTestStats(output);
+	const stats = extractNodeTestStats(output) ?? extractTestStats(output);
 	summary.passed = stats.passed ?? 0;
 	summary.failed = stats.failed ?? 0;
 	summary.skipped = stats.skipped ?? 0;
 
 	if (summary.passed === 0 && summary.failed === 0) {
 		for (const line of lines) {
+			// Summary rows (`ℹ fail 0`) are counts, not failures.
+			if (SUMMARY_LINE_PATTERN.test(line)) {
+				continue;
+			}
 			if (FALLBACK_PASS_PATTERN.test(line)) {
 				summary.passed++;
 			}
