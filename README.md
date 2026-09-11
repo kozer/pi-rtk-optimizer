@@ -78,6 +78,12 @@ pi install npm:pi-rtk-optimizer
 pi install git:github.com/MasuRii/pi-rtk-optimizer
 ```
 
+A git install runs `npm install` inside the checkout. Both Pi peer packages are
+declared optional so that install does not pull a second copy of Pi — and its
+transitive advisories — into the extension directory; Pi resolves
+`@earendil-works/*` from its own runtime when it loads the extension. Install
+those packages explicitly if you want their types for local type checking.
+
 ## Usage
 
 ### Settings Modal
