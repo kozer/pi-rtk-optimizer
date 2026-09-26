@@ -1,4 +1,4 @@
-import { matchesCommandPatterns, normalizeCommandForDetection } from "./command-detection.js";
+import { commandSegmentsForDetection, matchesCommandPatterns } from "./command-detection.js";
 import { compactPath } from "./path-utils.js";
 
 const LINTER_COMMAND_PATTERNS = [
@@ -75,23 +75,52 @@ function parseIssues(output: string): Issue[] {
 }
 
 function detectLinterType(command: string | undefined | null): string {
-	const normalized = normalizeCommandForDetection(command);
-	if (!normalized) {
-		return "Linter";
+	for (const segment of commandSegmentsForDetection(command)) {
+		if (/(?:^|\s)eslint\b/.test(segment)) return "ESLint";
+		if (/^ruff\b/.test(segment)) return "Ruff";
+		if (/^pylint\b/.test(segment)) return "Pylint";
+		if (/^mypy\b/.test(segment)) return "MyPy";
+		if (/^flake8\b/.test(segment)) return "Flake8";
+		if (/^black\b/.test(segment)) return "Black";
+		if (/clippy\b/.test(segment)) return "Clippy";
+		if (/^golangci-lint\b/.test(segment)) return "GolangCI-Lint";
+		if (/prettier\b/.test(segment)) return "Prettier";
 	}
-	if (/(?:^|\s)eslint\b/.test(normalized)) return "ESLint";
-	if (/^ruff\b/.test(normalized)) return "Ruff";
-	if (/^pylint\b/.test(normalized)) return "Pylint";
-	if (/^mypy\b/.test(normalized)) return "MyPy";
-	if (/^flake8\b/.test(normalized)) return "Flake8";
-	if (/clippy\b/.test(normalized)) return "Clippy";
-	if (/^golangci-lint\b/.test(normalized)) return "GolangCI-Lint";
-	if (/prettier\b/.test(normalized)) return "Prettier";
 	return "Linter";
 }
 
+/**
+ * Segments that only configure the shell and write nothing of their own, so a
+ * command they prefix is still attributable to whatever follows.
+ */
+const SILENT_SETUP_PATTERN = /^(?:cd|pushd|popd|set|export|unset|source|\.|true|:|ulimit|umask)\b/;
+
+/**
+ * Whether the linter is the sole producer of this command's output.
+ *
+ * `isLinterCommand` is segment-wise on purpose, so that a linter behind `cd` is
+ * detected. Aggregation needs a stronger property: it replaces the whole result,
+ * which is only sound when nothing else in the command wrote anything. Without
+ * this guard, `ruff check src/` chained after an `echo` or a `git status`
+ * discarded their output along with the linter's.
+ */
+export function isLinterOnlyCommand(command: string | undefined | null): boolean {
+	let matched = false;
+	for (const segment of commandSegmentsForDetection(command)) {
+		if (LINTER_COMMAND_PATTERNS.some((pattern) => pattern.test(segment))) {
+			matched = true;
+			continue;
+		}
+		if (SILENT_SETUP_PATTERN.test(segment)) {
+			continue;
+		}
+		return false;
+	}
+	return matched;
+}
+
 export function aggregateLinterOutput(output: string, command: string | undefined | null): string | null {
-	if (!isLinterCommand(command)) {
+	if (!isLinterOnlyCommand(command)) {
 		return null;
 	}
 

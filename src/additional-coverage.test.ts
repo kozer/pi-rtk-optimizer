@@ -4,6 +4,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { clearOutputMetrics, getOutputMetricsSummary, trackOutputSavings } from "./output-metrics.ts";
 import { mock, runTest } from "./test-helpers.test.ts";
 import { matchesCommandPatterns, normalizeCommandForDetection } from "./techniques/command-detection.ts";
+import { aggregateLinterOutput, isLinterOnlyCommand } from "./techniques/linter.ts";
 import { compactPath } from "./techniques/path-utils.ts";
 import { filterAggressive } from "./techniques/source.ts";
 import { aggregateTestOutput, isTestCommand } from "./techniques/test-output.ts";
@@ -510,6 +511,38 @@ runTest("streaming sanitizer strips ANSI codes and preserves non-text blocks", (
 		(plainResult.content[0] as { text: string }).text,
 		"[rtk] warning: builtin filters: parse failure\n\nworking tree clean\n",
 	);
+});
+
+runTest("linter aggregation is skipped when another segment writes output", () => {
+	const output = "--- git ---\n M src/a.ts\n";
+	assert.equal(
+		aggregateLinterOutput(
+			output,
+			'cd repo\necho "--- git ---"\nruff check src/\ngit status --short',
+		),
+		null,
+	);
+});
+
+runTest("linter aggregation still applies behind cd and names the linter", () => {
+	assert.equal(isLinterOnlyCommand("cd repo && ruff check src/"), true);
+	assert.equal(
+		aggregateLinterOutput("", "cd repo && ruff check src/"),
+		"[OK] Ruff: No issues found",
+	);
+});
+
+runTest("a quoted shell separator does not make a command linter-only", () => {
+	assert.equal(isLinterOnlyCommand("grep -n -i 'linter\\|ruff' src/a.ts"), false);
+	assert.equal(
+		aggregateLinterOutput("src/a.ts:1:ruff", "grep -n -i 'linter\\|ruff' src/a.ts"),
+		null,
+	);
+});
+
+runTest("linter aggregation refuses a command with no linter at all", () => {
+	assert.equal(isLinterOnlyCommand("cd repo && git status"), false);
+	assert.equal(aggregateLinterOutput(" M src/a.ts", "cd repo && git status"), null);
 });
 
 console.log("All additional coverage tests passed.");
