@@ -37,7 +37,19 @@ const SKIP_PATTERNS = [
 	/^\s*Running\s+/,
 ];
 
-const ERROR_START_PATTERNS = [/^error\[/, /^error:/, /^\[ERROR\]/, /^FAIL/];
+const ERROR_START_PATTERNS = [
+	/^error\[/,
+	/^error:/,
+	/^\[ERROR\]/,
+	/^FAIL/,
+	// npm 7+ prefixes every error line, and pi appends its own status line when
+	// the command exits non-zero. Without these, a build that never ran was
+	// summarized as "[OK] Build successful (0 units compiled)" -- a failure
+	// reported as success, which is worse than no summary at all.
+	/^npm error\b/,
+	/^Command exited with code \d+/,
+	/^Command terminated without an exit code\b/,
+];
 const WARNING_PATTERNS = [/^warning:/, /^\[WARNING\]/, /^warn:/];
 
 function isSkipLine(line: string): boolean {

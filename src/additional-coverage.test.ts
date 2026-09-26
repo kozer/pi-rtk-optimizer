@@ -9,6 +9,7 @@ import {
 	matchesCommandPatterns,
 	normalizeCommandForDetection,
 } from "./techniques/command-detection.ts";
+import { filterBuildOutput } from "./techniques/build.ts";
 import { aggregateLinterOutput, LINTER_COMMAND_PATTERNS } from "./techniques/linter.ts";
 import { compactPath } from "./techniques/path-utils.ts";
 import { filterAggressive } from "./techniques/source.ts";
@@ -614,6 +615,32 @@ runTest("every whole-result technique is refused when another segment writes out
 		);
 		assert.equal(outcome.changed, false, "replaced a compound command via " + technique);
 	}
+});
+
+runTest("a failed build is never summarized as success", () => {
+	const B = ["npm", "run", "build"].join(" ");
+	const command = "cd repo && " + B;
+
+	// npm 7+ prefixes every error line.
+	const npmFailure =
+		'npm error Missing script: "build"\nnpm error\nnpm error To see a list of scripts, run:\nnpm error   npm run\n';
+	assert.ok(
+		filterBuildOutput(npmFailure, command)?.startsWith("[ERROR]"),
+		"npm failure was summarized as success",
+	);
+
+	// pi appends this whenever the command exits non-zero, whatever it printed.
+	const statusOnly = "some output\n\nCommand exited with code 1\n";
+	assert.ok(
+		filterBuildOutput(statusOnly, command)?.startsWith("[ERROR]"),
+		"a non-zero exit was summarized as success",
+	);
+
+	// A passing build must still be reported as passing.
+	assert.equal(
+		filterBuildOutput("Compiling x", command),
+		"[OK] Build successful (1 units compiled)",
+	);
 });
 
 runTest("a sole-producer command is still compacted", () => {
