@@ -4,15 +4,20 @@ import { dirname, join, resolve, sep } from "node:path";
 import {
 	aggregateLinterOutput,
 	aggregateTestOutput,
+	BUILD_COMMAND_PATTERNS,
 	compactGitOutput,
 	detectLanguage,
 	filterBuildOutput,
 	filterSourceCode,
+	GIT_COMMAND_PATTERNS,
 	groupSearchResults,
+	LINTER_COMMAND_PATTERNS,
 	smartTruncate,
 	stripAnsiFast,
+	TEST_COMMAND_PATTERNS,
 	truncate,
 } from "./techniques/index.js";
+import { isOnlyFamilyCommand } from "./techniques/command-detection.js";
 import { trackOutputSavings } from "./output-metrics.js";
 import { mapTextContentBlocks, toRecord } from "./record-utils.js";
 import type { RtkIntegrationConfig } from "./types.js";
@@ -510,17 +515,6 @@ function applyNullableTechnique(
 	}
 }
 
-function applyConditionalTechnique(
-	state: CompactionState,
-	enabled: boolean,
-	transform: (text: string) => string | null,
-	technique: string,
-): void {
-	if (enabled) {
-		applyNullableTechnique(state, transform, technique);
-	}
-}
-
 function beginCompaction(
 	text: string,
 	config: RtkIntegrationConfig,
@@ -537,6 +531,54 @@ function applyReadCompactionBanner(state: CompactionState): void {
 	}
 }
 
+/**
+ * The techniques that replace the ENTIRE tool result rather than editing part
+ * of it.
+ *
+ * Each declares the command family it owns. This list is the only place that
+ * decides whether one may run, and it refuses unless that family is the
+ * command's sole output producer: a compound command otherwise loses every
+ * line its other segments wrote. That was a real failure -- a rebuild-and-verify
+ * command collapsed to a single "[OK] Build successful (0 units compiled)"
+ * line, hiding the failure of the step it was running.
+ *
+ * Keeping the check here, rather than trusting each technique to guard itself
+ * as well, is what stops a technique being added without it.
+ */
+type WholeResultTechnique = {
+	flag: "filterBuildOutput" | "aggregateTestOutput" | "compactGitOutput" | "aggregateLinterOutput";
+	technique: string;
+	patterns: readonly RegExp[];
+	transform: (text: string, command: string | undefined | null) => string | null;
+};
+
+export const WHOLE_RESULT_TECHNIQUES: readonly WholeResultTechnique[] = [
+	{
+		flag: "filterBuildOutput",
+		technique: "build",
+		patterns: BUILD_COMMAND_PATTERNS,
+		transform: filterBuildOutput,
+	},
+	{
+		flag: "aggregateTestOutput",
+		technique: "test",
+		patterns: TEST_COMMAND_PATTERNS,
+		transform: aggregateTestOutput,
+	},
+	{
+		flag: "compactGitOutput",
+		technique: "git",
+		patterns: GIT_COMMAND_PATTERNS,
+		transform: compactGitOutput,
+	},
+	{
+		flag: "aggregateLinterOutput",
+		technique: "linter",
+		patterns: LINTER_COMMAND_PATTERNS,
+		transform: aggregateLinterOutput,
+	},
+];
+
 function compactBashText(
 	text: string,
 	command: string | undefined,
@@ -544,10 +586,11 @@ function compactBashText(
 ): { text: string; techniques: string[] } {
 	const { state, compaction } = beginCompaction(text, config);
 
-	applyConditionalTechnique(state, compaction.filterBuildOutput, (t) => filterBuildOutput(t, command), "build");
-	applyConditionalTechnique(state, compaction.aggregateTestOutput, (t) => aggregateTestOutput(t, command), "test");
-	applyConditionalTechnique(state, compaction.compactGitOutput, (t) => compactGitOutput(t, command), "git");
-	applyConditionalTechnique(state, compaction.aggregateLinterOutput, (t) => aggregateLinterOutput(t, command), "linter");
+	for (const { flag, technique, patterns, transform } of WHOLE_RESULT_TECHNIQUES) {
+		if (!compaction[flag]) continue;
+		if (!isOnlyFamilyCommand(command, patterns)) continue;
+		applyNullableTechnique(state, (text) => transform(text, command), technique);
+	}
 
 	applyTruncation(state, compaction);
 

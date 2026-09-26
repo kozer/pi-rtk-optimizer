@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
-import { compactToolResult } from "./output-compactor.ts";
+import { compactToolResult, WHOLE_RESULT_TECHNIQUES } from "./output-compactor.ts";
 import { clearOutputMetrics, getOutputMetricsSummary, trackOutputSavings } from "./output-metrics.ts";
 import { cloneDefaultConfig, mock, runTest } from "./test-helpers.test.ts";
 import {
@@ -9,9 +9,7 @@ import {
 	matchesCommandPatterns,
 	normalizeCommandForDetection,
 } from "./techniques/command-detection.ts";
-import { filterBuildOutput } from "./techniques/build.ts";
-import { compactGitOutput } from "./techniques/git.ts";
-import { aggregateLinterOutput, isLinterOnlyCommand } from "./techniques/linter.ts";
+import { aggregateLinterOutput, LINTER_COMMAND_PATTERNS } from "./techniques/linter.ts";
 import { compactPath } from "./techniques/path-utils.ts";
 import { filterAggressive } from "./techniques/source.ts";
 import { aggregateTestOutput, isTestCommand } from "./techniques/test-output.ts";
@@ -521,18 +519,23 @@ runTest("streaming sanitizer strips ANSI codes and preserves non-text blocks", (
 });
 
 runTest("linter aggregation is skipped when another segment writes output", () => {
-	const output = "--- git ---\n M src/a.ts\n";
-	assert.equal(
-		aggregateLinterOutput(
-			output,
-			'cd repo\necho "--- git ---"\nruff check src/\ngit status --short',
-		),
-		null,
+	// The guard lives in the compactor, not in the technique, so this asserts
+	// the property at the level that applies it.
+	const outcome = compactToolResult(
+		{
+			toolName: "bash",
+			input: {
+				command: 'cd repo\necho "--- git ---"\nruff check src/\ngit status --short',
+			},
+			content: [{ type: "text", text: "--- git ---\n M src/a.ts\n" }],
+		},
+		cloneDefaultConfig(),
 	);
+	assert.equal(outcome.changed, false);
 });
 
 runTest("linter aggregation still applies behind cd and names the linter", () => {
-	assert.equal(isLinterOnlyCommand("cd repo && ruff check src/"), true);
+	assert.equal(isOnlyFamilyCommand("cd repo && ruff check src/", LINTER_COMMAND_PATTERNS), true);
 	assert.equal(
 		aggregateLinterOutput("", "cd repo && ruff check src/"),
 		"[OK] Ruff: No issues found",
@@ -540,15 +543,25 @@ runTest("linter aggregation still applies behind cd and names the linter", () =>
 });
 
 runTest("a quoted shell separator does not make a command linter-only", () => {
-	assert.equal(isLinterOnlyCommand("grep -n -i 'linter\\|ruff' src/a.ts"), false);
 	assert.equal(
-		aggregateLinterOutput("src/a.ts:1:ruff", "grep -n -i 'linter\\|ruff' src/a.ts"),
-		null,
+		isOnlyFamilyCommand("grep -n -i 'linter\\|ruff' src/a.ts", LINTER_COMMAND_PATTERNS),
+		false,
 	);
+	// The escape splits the quote, so the technique still sees a `ruff` segment.
+	// The compactor is what refuses it, because grep is another producer.
+	const outcome = compactToolResult(
+		{
+			toolName: "bash",
+			input: { command: "grep -n -i 'linter\\|ruff' src/a.ts" },
+			content: [{ type: "text", text: "src/a.ts:1:ruff" }],
+		},
+		cloneDefaultConfig(),
+	);
+	assert.equal(outcome.changed, false);
 });
 
 runTest("linter aggregation refuses a command with no linter at all", () => {
-	assert.equal(isLinterOnlyCommand("cd repo && git status"), false);
+	assert.equal(isOnlyFamilyCommand("cd repo && git status", LINTER_COMMAND_PATTERNS), false);
 	assert.equal(aggregateLinterOutput(" M src/a.ts", "cd repo && git status"), null);
 });
 
@@ -560,61 +573,59 @@ runTest("isOnlyFamilyCommand admits non-producing segments only", () => {
 	assert.equal(isOnlyFamilyCommand("cd repo", build), false);
 });
 
-runTest("whole-result techniques leave a compound command's other output alone", () => {
-	const T = ["npm", "test"].join(" ");
-	const B = ["npm", "run", "build"].join(" ");
-	const G = ["git", "status"].join(" ");
-	assert.equal(filterBuildOutput("MARK\nCompiling x\nMARK", "echo MARK\n" + B + "\necho MARK"), null);
-	assert.equal(aggregateTestOutput("MARK\n10 passing\nMARK", "echo MARK\n" + T + "\necho MARK"), null);
-	assert.equal(compactGitOutput("MARK\n M a.ts\nMARK", "echo MARK\n" + G + " --short\necho MARK"), null);
+runTest("every whole-result technique is refused when another segment writes output", () => {
+	// Driven by the compactor's own table: a technique added there without a
+	// sample below fails the key comparison rather than going untested.
+	const samples = new Map<string, [string, string]>([
+		["build", ["npm run build", "Compiling x"]],
+		["test", ["npm test", "10 passing"]],
+		["git", ["git status --short", " M a.ts"]],
+		["linter", ["ruff check src", "src/a.ts:1:1 F401 unused"]],
+	]);
+	assert.deepEqual(
+		WHOLE_RESULT_TECHNIQUES.map((entry) => entry.technique).sort(),
+		[...samples.keys()].sort(),
+	);
 
-	// The same property through the entry point production calls, so the config
-	// flags and the technique chain are covered too, not just the techniques.
-	const cases: [string, string][] = [
-		["echo MARK\n" + B + "\necho MARK", "MARK\nCompiling x\nMARK"],
-		["echo MARK\n" + T + "\necho MARK", "MARK\n10 passing\nMARK"],
-		["echo MARK\n" + G + " --short\necho MARK", "MARK\n M a.ts\nMARK"],
-	];
-	for (const [command, output] of cases) {
+	for (const { technique, patterns } of WHOLE_RESULT_TECHNIQUES) {
+		const sample = samples.get(technique);
+		assert.ok(sample, "no sample command for " + technique);
+		if (!sample) continue;
+		const [trigger, output] = sample;
+
+		// Sole producer: this command is the technique's to replace.
+		assert.equal(isOnlyFamilyCommand("cd repo && " + trigger, patterns), true, technique);
+		// Another producer: refusing is the whole point.
+		assert.equal(
+			isOnlyFamilyCommand("echo MARK\n" + trigger + "\necho MARK", patterns),
+			false,
+			technique,
+		);
+
+		// And through the entry point production calls, so the config flags and
+		// the technique chain are covered too, not just the guard.
 		const outcome = compactToolResult(
 			{
 				toolName: "bash",
-				input: { command },
-				content: [{ type: "text", text: output }],
+				input: { command: "echo MARK\n" + trigger + "\necho MARK" },
+				content: [{ type: "text", text: "MARK\n" + output + "\nMARK" }],
 			},
 			cloneDefaultConfig(),
 		);
-		assert.equal(outcome.changed, false, "replaced a compound command: " + command);
+		assert.equal(outcome.changed, false, "replaced a compound command via " + technique);
 	}
 });
 
-runTest("whole-result techniques still apply behind cd and through a filter", () => {
-	const B = ["npm", "run", "build"].join(" ");
-	assert.equal(
-		filterBuildOutput("Compiling x", "cd repo && " + B),
-		"[OK] Build successful (1 units compiled)",
+runTest("a sole-producer command is still compacted", () => {
+	const outcome = compactToolResult(
+		{
+			toolName: "bash",
+			input: { command: "cd repo && npm run build" },
+			content: [{ type: "text", text: "Compiling x" }],
+		},
+		cloneDefaultConfig(),
 	);
-	assert.equal(
-		filterBuildOutput("Compiling x", B + " | head -5"),
-		"[OK] Build successful (1 units compiled)",
-	);
-});
-
-runTest("every technique that detects a command also guards its whole result", () => {
-	// A technique that replaces the entire tool result must first prove the
-	// command has no other output producer. This tripwire fails when a new one
-	// reaches for matchesCommandPatterns without that guard -- the shape of the
-	// build and test-output bugs, where a compound command lost every line.
-	const offenders: string[] = [];
-	const dir = new URL("./techniques/", import.meta.url).pathname;
-	for (const entry of readdirSync(dir)) {
-		if (!entry.endsWith(".ts") || entry === "command-detection.ts") continue;
-		const source = readFileSync(dir + entry, "utf-8");
-		if (source.includes("matchesCommandPatterns(") && !source.includes("isOnlyFamilyCommand(")) {
-			offenders.push(entry);
-		}
-	}
-	assert.deepEqual(offenders, []);
+	assert.equal(outcome.changed, true);
 });
 
 console.log("All additional coverage tests passed.");

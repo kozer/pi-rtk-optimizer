@@ -1,4 +1,4 @@
-import { isOnlyFamilyCommand, matchesCommandPatterns } from "./command-detection.js";
+import { matchesCommandPatterns } from "./command-detection.js";
 
 interface TestSummary {
 	passed: number;
@@ -7,7 +7,7 @@ interface TestSummary {
 	failures: string[];
 }
 
-const TEST_COMMAND_PATTERNS = [
+export const TEST_COMMAND_PATTERNS = [
 	/^npm\s+test\b/,
 	/^pnpm\s+test\b/,
 	/^yarn\s+test\b/,
@@ -93,7 +93,7 @@ export function isTestCommand(command: string | undefined | null): boolean {
 }
 
 export function aggregateTestOutput(output: string, command: string | undefined | null): string | null {
-	if (!isOnlyFamilyCommand(command, TEST_COMMAND_PATTERNS)) {
+	if (!isTestCommand(command)) {
 		return null;
 	}
 

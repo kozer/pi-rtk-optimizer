@@ -1,11 +1,7 @@
-import {
-	commandSegmentsForDetection,
-	isOnlyFamilyCommand,
-	matchesCommandPatterns,
-} from "./command-detection.js";
+import { commandSegmentsForDetection, matchesCommandPatterns } from "./command-detection.js";
 import { compactPath } from "./path-utils.js";
 
-const LINTER_COMMAND_PATTERNS = [
+export const LINTER_COMMAND_PATTERNS = [
 	/^(?:pnpm\s+)?(?:npx\s+)?eslint\b/,
 	/^(?:npx\s+)?prettier\b/,
 	/^ruff\b/,
@@ -93,16 +89,8 @@ function detectLinterType(command: string | undefined | null): string {
 	return "Linter";
 }
 
-/**
- * Segments that only configure the shell and write nothing of their own, so a
- * command they prefix is still attributable to whatever follows.
- */
-export function isLinterOnlyCommand(command: string | undefined | null): boolean {
-	return isOnlyFamilyCommand(command, LINTER_COMMAND_PATTERNS);
-}
-
 export function aggregateLinterOutput(output: string, command: string | undefined | null): string | null {
-	if (!isLinterOnlyCommand(command)) {
+	if (!isLinterCommand(command)) {
 		return null;
 	}
 

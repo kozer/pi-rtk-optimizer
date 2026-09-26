@@ -1,4 +1,4 @@
-import { isOnlyFamilyCommand, matchesCommandPatterns } from "./command-detection.js";
+import { matchesCommandPatterns } from "./command-detection.js";
 
 interface BuildStats {
 	compiled: number;
@@ -6,7 +6,7 @@ interface BuildStats {
 	warnings: string[];
 }
 
-const BUILD_COMMAND_PATTERNS = [
+export const BUILD_COMMAND_PATTERNS = [
 	/^cargo\s+(build|check)\b/,
 	/^bun\s+build\b/,
 	/^npm\s+run\s+build\b/,
@@ -57,7 +57,7 @@ export function isBuildCommand(command: string | undefined | null): boolean {
 }
 
 export function filterBuildOutput(output: string, command: string | undefined | null): string | null {
-	if (!isOnlyFamilyCommand(command, BUILD_COMMAND_PATTERNS)) {
+	if (!isBuildCommand(command)) {
 		return null;
 	}
 
