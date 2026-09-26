@@ -624,16 +624,18 @@ runTest("a failed build is never summarized as success", () => {
 	// npm 7+ prefixes every error line.
 	const npmFailure =
 		'npm error Missing script: "build"\nnpm error\nnpm error To see a list of scripts, run:\nnpm error   npm run\n';
+	const npmResult = filterBuildOutput(npmFailure, command);
 	assert.ok(
-		filterBuildOutput(npmFailure, command)?.startsWith("[ERROR]"),
-		"npm failure was summarized as success",
+		npmResult?.startsWith("[ERROR] 1 error(s):"),
+		"one npm failure should count once, got: " + npmResult?.split("\n")[0],
 	);
 
 	// pi appends this whenever the command exits non-zero, whatever it printed.
 	const statusOnly = "some output\n\nCommand exited with code 1\n";
+	const statusResult = filterBuildOutput(statusOnly, command);
 	assert.ok(
-		filterBuildOutput(statusOnly, command)?.startsWith("[ERROR]"),
-		"a non-zero exit was summarized as success",
+		statusResult?.startsWith("[ERROR] 1 error(s):"),
+		"a non-zero exit should be one error, got: " + statusResult?.split("\n")[0],
 	);
 
 	// A passing build must still be reported as passing.

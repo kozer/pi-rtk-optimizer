@@ -42,14 +42,21 @@ const ERROR_START_PATTERNS = [
 	/^error:/,
 	/^\[ERROR\]/,
 	/^FAIL/,
-	// npm 7+ prefixes every error line, and pi appends its own status line when
-	// the command exits non-zero. Without these, a build that never ran was
+	// npm 7+ prefixes every error line. Without it, a build that never ran was
 	// summarized as "[OK] Build successful (0 units compiled)" -- a failure
 	// reported as success, which is worse than no summary at all.
 	/^npm error\b/,
-	/^Command exited with code \d+/,
-	/^Command terminated without an exit code\b/,
 ];
+
+/**
+ * pi's own status line, appended whenever the command exits non-zero.
+ *
+ * It is proof of failure, not an error message, so it is reported only when the
+ * output carried no error of its own -- counting it alongside real messages
+ * would inflate the total by one for every failure.
+ */
+const FAILURE_STATUS_PATTERN =
+	/^(?:Command exited with code \d+|Command terminated without an exit code)\b/;
 const WARNING_PATTERNS = [/^warning:/, /^\[WARNING\]/, /^warn:/];
 
 function isSkipLine(line: string): boolean {
@@ -83,8 +90,14 @@ export function filterBuildOutput(output: string, command: string | undefined | 
 	let inErrorBlock = false;
 	let currentError: string[] = [];
 	let blankCount = 0;
+	let previousLineStartedError = false;
+	let failureStatus: string | undefined;
 
 	for (const line of lines) {
+		const startsError = isErrorStart(line);
+		const continuesError = startsError && previousLineStartedError;
+		previousLineStartedError = startsError;
+
 		if (line.match(/^\s*(Compiling|Checking|Building)\s+/)) {
 			stats.compiled++;
 			continue;
@@ -94,13 +107,25 @@ export function filterBuildOutput(output: string, command: string | undefined | 
 			continue;
 		}
 
-		if (isErrorStart(line)) {
-			if (inErrorBlock && currentError.length > 0) {
-				stats.errors.push([...currentError]);
+		if (FAILURE_STATUS_PATTERN.test(line)) {
+			failureStatus = line;
+			continue;
+		}
+
+		if (startsError) {
+			// npm prefixes every line of one failure, so a run of consecutive
+			// error-start lines is one error, not one each. cargo prints its
+			// marker once and puts the details on the following lines, so its
+			// next error -- separated by those details -- still starts a block.
+			if (!continuesError) {
+				if (inErrorBlock && currentError.length > 0) {
+					stats.errors.push([...currentError]);
+				}
+				inErrorBlock = true;
+				currentError = [];
+				blankCount = 0;
 			}
-			inErrorBlock = true;
-			currentError = [line];
-			blankCount = 0;
+			currentError.push(line);
 			continue;
 		}
 
@@ -138,6 +163,10 @@ export function filterBuildOutput(output: string, command: string | undefined | 
 
 	if (inErrorBlock && currentError.length > 0) {
 		stats.errors.push(currentError);
+	}
+
+	if (failureStatus && stats.errors.length === 0) {
+		stats.errors.push([failureStatus]);
 	}
 
 	if (stats.errors.length === 0 && stats.warnings.length === 0) {
