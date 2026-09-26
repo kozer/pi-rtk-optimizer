@@ -84,3 +84,45 @@ export function matchesCommandPatterns(
 	}
 	return segments.some((segment) => patterns.some((pattern) => pattern.test(segment)));
 }
+
+/**
+ * Commands that do not contribute output of their own.
+ *
+ * Two kinds live here: silent setup (`cd`, `export`, `set -e`) and pass-through
+ * filters (`head`, `tail`, `cat`), which only forward a slice of the output
+ * produced by the command they read from.
+ */
+const NON_PRODUCING_COMMAND_PATTERN =
+	/^(?:cd|pushd|popd|set|export|unset|source|\.|true|:|ulimit|umask|head|tail|cat)\b/;
+
+/**
+ * Whether this command's only output producer belongs to `patterns`.
+ *
+ * Whole-result techniques replace the ENTIRE tool result, which is sound only
+ * when nothing else in the command wrote anything. Detection deliberately stays
+ * any-segment (`matchesCommandPatterns`) so a build behind `cd` is found; that
+ * same property makes it unsafe as a gate, because `echo x && npm run build`
+ * then discards the echo along with the build.
+ *
+ * So a whole-result technique needs this stronger property: every segment is
+ * either a member of its family or produces nothing, and at least one is a
+ * member. `commandSegmentsForDetection` splits on newlines and `&&`/`||`/`;`/`|`,
+ * so a quoted separator is not a segment and a filter after `|` is one.
+ */
+export function isOnlyFamilyCommand(
+	command: string | undefined | null,
+	patterns: readonly RegExp[],
+): boolean {
+	let matched = false;
+	for (const segment of commandSegmentsForDetection(command)) {
+		if (patterns.some((pattern) => pattern.test(segment))) {
+			matched = true;
+			continue;
+		}
+		if (NON_PRODUCING_COMMAND_PATTERN.test(segment)) {
+			continue;
+		}
+		return false;
+	}
+	return matched;
+}

@@ -1,4 +1,4 @@
-import { matchesCommandPatterns } from "./command-detection.js";
+import { isOnlyFamilyCommand, matchesCommandPatterns } from "./command-detection.js";
 
 interface TestSummary {
 	passed: number;
@@ -93,7 +93,7 @@ export function isTestCommand(command: string | undefined | null): boolean {
 }
 
 export function aggregateTestOutput(output: string, command: string | undefined | null): string | null {
-	if (!isTestCommand(command)) {
+	if (!isOnlyFamilyCommand(command, TEST_COMMAND_PATTERNS)) {
 		return null;
 	}
 

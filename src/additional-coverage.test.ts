@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
+import { compactToolResult } from "./output-compactor.ts";
 import { clearOutputMetrics, getOutputMetricsSummary, trackOutputSavings } from "./output-metrics.ts";
-import { mock, runTest } from "./test-helpers.test.ts";
-import { matchesCommandPatterns, normalizeCommandForDetection } from "./techniques/command-detection.ts";
+import { cloneDefaultConfig, mock, runTest } from "./test-helpers.test.ts";
+import {
+	isOnlyFamilyCommand,
+	matchesCommandPatterns,
+	normalizeCommandForDetection,
+} from "./techniques/command-detection.ts";
+import { filterBuildOutput } from "./techniques/build.ts";
+import { compactGitOutput } from "./techniques/git.ts";
 import { aggregateLinterOutput, isLinterOnlyCommand } from "./techniques/linter.ts";
 import { compactPath } from "./techniques/path-utils.ts";
 import { filterAggressive } from "./techniques/source.ts";
@@ -543,6 +550,71 @@ runTest("a quoted shell separator does not make a command linter-only", () => {
 runTest("linter aggregation refuses a command with no linter at all", () => {
 	assert.equal(isLinterOnlyCommand("cd repo && git status"), false);
 	assert.equal(aggregateLinterOutput(" M src/a.ts", "cd repo && git status"), null);
+});
+
+runTest("isOnlyFamilyCommand admits non-producing segments only", () => {
+	const build = [/^npm\s+run\s+build\b/];
+	assert.equal(isOnlyFamilyCommand("cd repo && npm run build", build), true);
+	assert.equal(isOnlyFamilyCommand("npm run build | head -5", build), true);
+	assert.equal(isOnlyFamilyCommand("echo x && npm run build", build), false);
+	assert.equal(isOnlyFamilyCommand("cd repo", build), false);
+});
+
+runTest("whole-result techniques leave a compound command's other output alone", () => {
+	const T = ["npm", "test"].join(" ");
+	const B = ["npm", "run", "build"].join(" ");
+	const G = ["git", "status"].join(" ");
+	assert.equal(filterBuildOutput("MARK\nCompiling x\nMARK", "echo MARK\n" + B + "\necho MARK"), null);
+	assert.equal(aggregateTestOutput("MARK\n10 passing\nMARK", "echo MARK\n" + T + "\necho MARK"), null);
+	assert.equal(compactGitOutput("MARK\n M a.ts\nMARK", "echo MARK\n" + G + " --short\necho MARK"), null);
+
+	// The same property through the entry point production calls, so the config
+	// flags and the technique chain are covered too, not just the techniques.
+	const cases: [string, string][] = [
+		["echo MARK\n" + B + "\necho MARK", "MARK\nCompiling x\nMARK"],
+		["echo MARK\n" + T + "\necho MARK", "MARK\n10 passing\nMARK"],
+		["echo MARK\n" + G + " --short\necho MARK", "MARK\n M a.ts\nMARK"],
+	];
+	for (const [command, output] of cases) {
+		const outcome = compactToolResult(
+			{
+				toolName: "bash",
+				input: { command },
+				content: [{ type: "text", text: output }],
+			},
+			cloneDefaultConfig(),
+		);
+		assert.equal(outcome.changed, false, "replaced a compound command: " + command);
+	}
+});
+
+runTest("whole-result techniques still apply behind cd and through a filter", () => {
+	const B = ["npm", "run", "build"].join(" ");
+	assert.equal(
+		filterBuildOutput("Compiling x", "cd repo && " + B),
+		"[OK] Build successful (1 units compiled)",
+	);
+	assert.equal(
+		filterBuildOutput("Compiling x", B + " | head -5"),
+		"[OK] Build successful (1 units compiled)",
+	);
+});
+
+runTest("every technique that detects a command also guards its whole result", () => {
+	// A technique that replaces the entire tool result must first prove the
+	// command has no other output producer. This tripwire fails when a new one
+	// reaches for matchesCommandPatterns without that guard -- the shape of the
+	// build and test-output bugs, where a compound command lost every line.
+	const offenders: string[] = [];
+	const dir = new URL("./techniques/", import.meta.url).pathname;
+	for (const entry of readdirSync(dir)) {
+		if (!entry.endsWith(".ts") || entry === "command-detection.ts") continue;
+		const source = readFileSync(dir + entry, "utf-8");
+		if (source.includes("matchesCommandPatterns(") && !source.includes("isOnlyFamilyCommand(")) {
+			offenders.push(entry);
+		}
+	}
+	assert.deepEqual(offenders, []);
 });
 
 console.log("All additional coverage tests passed.");

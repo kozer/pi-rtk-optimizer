@@ -1,4 +1,8 @@
-import { commandSegmentsForDetection, matchesCommandPatterns } from "./command-detection.js";
+import {
+	commandSegmentsForDetection,
+	isOnlyFamilyCommand,
+	matchesCommandPatterns,
+} from "./command-detection.js";
 import { compactPath } from "./path-utils.js";
 
 const LINTER_COMMAND_PATTERNS = [
@@ -93,30 +97,8 @@ function detectLinterType(command: string | undefined | null): string {
  * Segments that only configure the shell and write nothing of their own, so a
  * command they prefix is still attributable to whatever follows.
  */
-const SILENT_SETUP_PATTERN = /^(?:cd|pushd|popd|set|export|unset|source|\.|true|:|ulimit|umask)\b/;
-
-/**
- * Whether the linter is the sole producer of this command's output.
- *
- * `isLinterCommand` is segment-wise on purpose, so that a linter behind `cd` is
- * detected. Aggregation needs a stronger property: it replaces the whole result,
- * which is only sound when nothing else in the command wrote anything. Without
- * this guard, `ruff check src/` chained after an `echo` or a `git status`
- * discarded their output along with the linter's.
- */
 export function isLinterOnlyCommand(command: string | undefined | null): boolean {
-	let matched = false;
-	for (const segment of commandSegmentsForDetection(command)) {
-		if (LINTER_COMMAND_PATTERNS.some((pattern) => pattern.test(segment))) {
-			matched = true;
-			continue;
-		}
-		if (SILENT_SETUP_PATTERN.test(segment)) {
-			continue;
-		}
-		return false;
-	}
-	return matched;
+	return isOnlyFamilyCommand(command, LINTER_COMMAND_PATTERNS);
 }
 
 export function aggregateLinterOutput(output: string, command: string | undefined | null): string | null {
